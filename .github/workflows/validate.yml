@@ -3,8 +3,9 @@ name: Validate Researcher Operating System
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # Stacked pull requests use proposal branches as their base. Validate every
+  # pull request so dependent layers receive the same gates as the base layer.
+  pull_request: {}
   workflow_dispatch:
 
 jobs:
@@ -20,6 +21,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            researcher/benchmarks/sdk-runner/package-lock.json
+            researcher/schemas/typescript/package-lock.json
+
       - name: Install validation dependencies
         run: pip install -r requirements-dev.txt
 
@@ -27,7 +37,21 @@ jobs:
         run: |
           python -m py_compile \
             researcher/scripts/skill_frontmatter.py \
+            researcher/scripts/governance_policy.py \
+            researcher/scripts/build_inventory.py \
+            researcher/scripts/export_policy.py \
+            researcher/scripts/schema_contract.py \
+            researcher/scripts/artifact_store.py \
+            researcher/scripts/migrate_legacy.py \
             researcher/scripts/tests/test_skill_frontmatter.py \
+            researcher/scripts/tests/test_build_inventory.py \
+            researcher/scripts/tests/test_export_policy.py \
+            researcher/scripts/tests/test_governance_policy.py \
+            researcher/scripts/tests/test_schema_contract.py \
+            researcher/scripts/tests/test_artifact_store.py \
+            researcher/scripts/validate_governance.py \
+            researcher/scripts/validate_export.py \
+            researcher/scripts/validate_schemas.py \
             researcher/scripts/validate_platform_compat.py \
             researcher/scripts/validate_repo.py \
             researcher/scripts/validate_run.py \
@@ -45,8 +69,39 @@ jobs:
             examples/long-horizon-prompt-lab/scripts/build_lab.py \
             examples/long-horizon-prompt-lab/scripts/validate_site.py
 
-      - name: Unit tests (frontmatter parser)
-        run: python -m unittest researcher.scripts.tests.test_skill_frontmatter
+      - name: Researcher unit tests
+        run: python -m unittest discover -s researcher/scripts/tests -p 'test_*.py'
+
+      - name: Governance policy
+        run: python researcher/scripts/validate_governance.py --check
+
+      - name: Generated repository inventory
+        run: python researcher/scripts/build_inventory.py --check
+
+      - name: Public export boundary
+        run: >-
+          python researcher/scripts/validate_export.py check
+          --staging-dir researcher/exports/examples/restricted-citation-v1
+
+      - name: Python schema and artifact contract
+        run: |
+          python researcher/scripts/validate_schemas.py --check
+          python researcher/scripts/migrate_legacy.py --dry-run
+
+      - name: TypeScript schema conformance
+        working-directory: researcher/schemas/typescript
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm test
+
+      - name: Benchmark runner contract
+        working-directory: researcher/benchmarks/sdk-runner
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm run router:dry-run -- --models gpt-5.5 --reps 1 --max-runs 112 --max-budget-usd 2
+          npm run effectiveness:dry-run -- --models gpt-5.5 --reps 1 --max-runs 12 --max-budget-usd 2
 
       - name: Build and validate long-horizon prompting site
         run: |
